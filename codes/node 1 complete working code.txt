@@ -1,0 +1,240 @@
+// Node1_CAN_With_Sensors.ino
+// CAN Communication + MPU6050 + ACS712 + 2x DS18B20
+
+#include <CAN.h>
+#include <Wire.h>
+#include <MPU6050.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// ============ PIN DEFINITIONS ============
+#define CURRENT_PIN A0        // ACS712 output
+#define ONE_WIRE_BUS_1 4      // DS18B20 #1 data pin
+#define ONE_WIRE_BUS_2 5      // DS18B20 #2 data pin
+
+// ============ CAN VARIABLES ============
+int sendCount = 0;
+int receiveCount = 0;
+unsigned long lastSend = 0;
+int nodeId = 1;  // Node 1
+
+// ============ SENSOR OBJECTS ============
+MPU6050 mpu;
+OneWire oneWire1(ONE_WIRE_BUS_1);
+OneWire oneWire2(ONE_WIRE_BUS_2);
+DallasTemperature ds18b20_1(&oneWire1);
+DallasTemperature ds18b20_2(&oneWire2);
+
+// ============ SENSOR VARIABLES ============
+float current = 0.0;
+float tempC_1 = 25.0;
+float tempC_2 = 25.0;
+float tempF_1 = 77.0;
+float tempF_2 = 77.0;
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+bool acs712Connected = false;
+bool ds18b20_1_OK = false;
+bool ds18b20_2_OK = false;
+bool mpuOK = false;
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  
+  Serial.println("=================================");
+  Serial.println("NODE 1 - CAN WITH ALL SENSORS");
+  Serial.println("=================================");
+  
+  // ============ INITIALIZE MPU6050 ============
+  Wire.begin();
+  mpu.initialize();
+  mpu.setSleepEnabled(false);
+  delay(100);
+  
+  mpu.getAcceleration(&ax, &ay, &az);
+  if (ax != 0 || ay != 0 || az != 0) {
+    Serial.println("✅ MPU6050 WORKING!");
+    mpuOK = true;
+  } else {
+    Serial.println("⚠️ MPU6050 - Check wiring");
+    mpuOK = false;
+  }
+  
+  // ============ INITIALIZE ACS712 ============
+  pinMode(CURRENT_PIN, INPUT);
+  
+  int sum = 0;
+  for(int i = 0; i < 10; i++) {
+    sum += analogRead(CURRENT_PIN);
+    delay(10);
+  }
+  int avg = sum / 10;
+  
+  if(avg > 400 && avg < 600) {
+    Serial.println("✅ ACS712 CONNECTED!");
+    acs712Connected = true;
+  } else {
+    Serial.println("⚠️ ACS712 NOT CONNECTED!");
+    acs712Connected = false;
+  }
+  
+  // ============ INITIALIZE DS18B20 #1 (Pin 4) ============
+  ds18b20_1.begin();
+  delay(100);
+  
+  if (ds18b20_1.getDeviceCount() > 0) {
+    Serial.println("✅ DS18B20 #1 (Pin 4) WORKING!");
+    ds18b20_1_OK = true;
+  } else {
+    Serial.println("❌ DS18B20 #1 (Pin 4) NOT FOUND!");
+    ds18b20_1_OK = false;
+  }
+  
+  // ============ INITIALIZE DS18B20 #2 (Pin 5) ============
+  ds18b20_2.begin();
+  delay(100);
+  
+  if (ds18b20_2.getDeviceCount() > 0) {
+    Serial.println("✅ DS18B20 #2 (Pin 5) WORKING!");
+    ds18b20_2_OK = true;
+  } else {
+    Serial.println("❌ DS18B20 #2 (Pin 5) NOT FOUND!");
+    ds18b20_2_OK = false;
+  }
+  
+  // ============ INITIALIZE CAN ============
+  if (!CAN.begin(250E3)) {
+    Serial.println("❌ CAN FAILED!");
+    while(1);
+  }
+  
+  Serial.println("✅ CAN Ready at 250KBPS!");
+  Serial.println("=================================\n");
+}
+
+void loop() {
+  // ============ READ ALL SENSORS ============
+  
+  // Read MPU6050
+  if (mpuOK) {
+    mpu.getAcceleration(&ax, &ay, &az);
+    mpu.getRotation(&gx, &gy, &gz);
+  }
+  
+  // Read ACS712
+  if (acs712Connected) {
+    int rawCurrent = analogRead(CURRENT_PIN);
+    float voltage = (rawCurrent / 1023.0) * 5.0;
+    current = (voltage - 2.5) / 0.185;
+    if (current < 0) current = 0;
+  } else {
+    current = 0.00;
+  }
+  
+  // Read DS18B20 #1
+  if (ds18b20_1_OK) {
+    ds18b20_1.requestTemperatures();
+    tempC_1 = ds18b20_1.getTempCByIndex(0);
+    tempF_1 = ds18b20_1.getTempFByIndex(0);
+    if (tempC_1 <= -127) {
+      tempC_1 = 25.0;
+      tempF_1 = 77.0;
+    }
+  }
+  
+  // Read DS18B20 #2
+  if (ds18b20_2_OK) {
+    ds18b20_2.requestTemperatures();
+    tempC_2 = ds18b20_2.getTempCByIndex(0);
+    tempF_2 = ds18b20_2.getTempFByIndex(0);
+    if (tempC_2 <= -127) {
+      tempC_2 = 25.0;
+      tempF_2 = 77.0;
+    }
+  }
+  
+  // ============ CAN SEND DATA (Every 2 seconds) ============
+  if (millis() - lastSend > 2000) {
+    sendData();
+    lastSend = millis();
+  }
+  
+  // ============ CAN RECEIVE DATA ============
+  receiveData();
+  
+  // ============ SERIAL DEBUG OUTPUT ============
+  debugOutput();
+  
+  delay(10);
+}
+
+void sendData() {
+  Serial.print("📤 Sending #");
+  Serial.print(sendCount);
+  Serial.print("... ");
+  
+  CAN.beginPacket(0x100 + nodeId);
+  CAN.write(nodeId);                    // Byte 0: Node ID
+  CAN.write(sendCount);                 // Byte 1: Message number
+  CAN.write(millis() / 1000);           // Byte 2: Time
+  CAN.write((int)tempC_1);              // Byte 3: Temp #1
+  CAN.write((int)tempC_2);              // Byte 4: Temp #2
+  CAN.write((int)(current * 100));      // Byte 5: Current * 100
+  CAN.write((ax >> 8) & 0xFF);          // Byte 6: Accel X high byte
+  CAN.write(ax & 0xFF);                 // Byte 7: Accel X low byte
+  CAN.endPacket();
+  
+  Serial.println("✓");
+  sendCount++;
+}
+
+void receiveData() {
+  int packetSize = CAN.parsePacket();
+  
+  if (packetSize) {
+    byte data[8];
+    int i = 0;
+    while (CAN.available() && i < 8) {
+      data[i++] = CAN.read();
+    }
+    
+    if (i >= 3) {
+      Serial.print("📥 From: ");
+      Serial.print(data[0]);
+      Serial.print(" | Msg: ");
+      Serial.print(data[1]);
+      
+      if (i > 3) {
+        Serial.print(" | Data: ");
+        for(int j=3; j<i; j++) {
+          Serial.print((char)data[j]);
+        }
+      }
+      Serial.println();
+    }
+  }
+}
+
+void debugOutput() {
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 2000) {
+    Serial.println("--- SENSOR DATA ---");
+    Serial.print("🌡️ Temp #1: ");
+    Serial.print(tempC_1);
+    Serial.print("°C | Temp #2: ");
+    Serial.print(tempC_2);
+    Serial.println("°C");
+    Serial.print("📳 Accel X:");
+    Serial.print(ax);
+    Serial.print(" Y:");
+    Serial.print(ay);
+    Serial.print(" Z:");
+    Serial.println(az);
+    Serial.print("⚡ Current: ");
+    Serial.print(current);
+    Serial.println("A");
+    Serial.println("-------------------\n");
+    lastDebug = millis();
+  }
+}

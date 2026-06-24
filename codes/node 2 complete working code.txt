@@ -1,0 +1,223 @@
+// Node2_FINAL_Working.ino
+// CAN + Motor + 2 Relays - Fully Working
+// Save this as your final Node 2 code
+
+#include <CAN.h>
+
+// ============ PIN DEFINITIONS ============
+#define RELAY1_PIN 5   // CH1 - Bulb 1 (Heater simulation)
+#define RELAY2_PIN 6   // CH2 - Bulb 2 (Spare)
+#define MOTOR_ENA 9    // L298N ENA (PWM speed control)
+#define MOTOR_IN1 8    // L298N IN1 (Direction)
+#define MOTOR_IN2 7    // L298N IN2 (Direction)
+
+// ============ CAN VARIABLES ============
+int sendCount = 0;
+int receiveCount = 0;
+unsigned long lastSend = 0;
+int nodeId = 2;
+
+// ============ ACTUATOR STATES ============
+int motorSpeed = 0;
+bool motorDirection = true;  // true = Forward, false = Reverse
+bool relay1State = false;     // false = OFF, true = ON
+bool relay2State = false;
+bool emergencyStop = false;
+
+void setup() {
+  Serial.begin(9600);
+  delay(2000);
+  
+  Serial.println("=================================");
+  Serial.println("NODE 2 - COMPLETE (Motor + 2 Relays)");
+  Serial.println("=================================");
+  
+  // Initialize Relays
+  pinMode(RELAY1_PIN, OUTPUT);
+  pinMode(RELAY2_PIN, OUTPUT);
+  digitalWrite(RELAY1_PIN, HIGH);  // Start OFF (HIGH = OFF for low-level trigger)
+  digitalWrite(RELAY2_PIN, HIGH);
+  
+  // Initialize Motor
+  pinMode(MOTOR_ENA, OUTPUT);
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
+  analogWrite(MOTOR_ENA, 0);
+  
+  // Initialize CAN
+  if (!CAN.begin(250E3)) {
+    Serial.println("❌ CAN FAILED!");
+    while(1);
+  }
+  
+  Serial.println("✅ CAN Ready at 250KBPS!");
+  Serial.println("✅ Motor Ready!");
+  Serial.println("✅ Relays Ready!");
+  Serial.println("");
+  Serial.println("Waiting for commands from Node 3...");
+  Serial.println("=================================\n");
+}
+
+void loop() {
+  // Send status every 2 seconds
+  if (millis() - lastSend > 2000) {
+    sendData();
+    lastSend = millis();
+  }
+  
+  // Check for incoming CAN commands
+  receiveData();
+  
+  // Update motor output
+  updateMotor();
+  
+  delay(10);
+}
+
+void sendData() {
+  Serial.print("📤 Status | Motor:");
+  Serial.print(motorSpeed);
+  Serial.print(" | Dir:");
+  Serial.print(motorDirection ? "FWD" : "REV");
+  Serial.print(" | R1:");
+  Serial.print(relay1State ? "ON" : "OFF");
+  Serial.print(" | R2:");
+  Serial.print(relay2State ? "ON" : "OFF");
+  Serial.print(" | EMG:");
+  Serial.print(emergencyStop ? "YES" : "NO");
+  Serial.println();
+  
+  CAN.beginPacket(0x200);  // Node 2 Status ID
+  CAN.write(nodeId);           // Byte 0: Node ID
+  CAN.write(sendCount);        // Byte 1: Message number
+  CAN.write(millis() / 1000);  // Byte 2: Time
+  CAN.write(motorSpeed);       // Byte 3: Motor speed
+  CAN.write(motorDirection ? 1 : 0);  // Byte 4: Direction
+  CAN.write(relay1State ? 1 : 0);     // Byte 5: Relay 1 state
+  CAN.write(relay2State ? 1 : 0);     // Byte 6: Relay 2 state
+  CAN.write(emergencyStop ? 1 : 0);   // Byte 7: Emergency state
+  CAN.endPacket();
+  
+  sendCount++;
+}
+
+void receiveData() {
+  int packetSize = CAN.parsePacket();
+  
+  if (packetSize) {
+    receiveCount++;
+    
+    byte data[8];
+    int i = 0;
+    while (CAN.available() && i < 8) {
+      data[i++] = CAN.read();
+    }
+    
+    // Check if it's a command message (ID 0x401)
+    if (CAN.packetId() == 0x401 && i >= 3) {
+      int target = data[0];
+      int command = data[1];
+      int value = data[2];
+      
+      // Execute command if target is this node (2) or broadcast (0)
+      if (target == nodeId || target == 0) {
+        executeCommand(command, value);
+      }
+    }
+  }
+}
+
+void executeCommand(int command, int value) {
+  switch(command) {
+    // ============ MOTOR COMMANDS ============
+    case 10:  // Set Motor Speed (0-255)
+      if (!emergencyStop) {
+        motorSpeed = constrain(value, 0, 255);
+        Serial.print("🎯 Motor speed set to: ");
+        Serial.println(motorSpeed);
+      } else {
+        Serial.println("⚠️ Emergency Stop Active - Cannot change speed");
+      }
+      break;
+      
+    case 12:  // Set Motor Direction (0=Reverse, 1=Forward)
+      if (!emergencyStop) {
+        motorDirection = (value > 0);
+        Serial.print("🔄 Motor direction: ");
+        Serial.println(motorDirection ? "FORWARD" : "REVERSE");
+      } else {
+        Serial.println("⚠️ Emergency Stop Active - Cannot change direction");
+      }
+      break;
+      
+    // ============ RELAY COMMANDS ============
+    case 13:  // Relay 1 Control (0=OFF, 1=ON)
+      if (!emergencyStop) {
+        relay1State = (value > 0);
+        digitalWrite(RELAY1_PIN, relay1State ? LOW : HIGH);
+        Serial.print("🔴 Relay 1: ");
+        Serial.println(relay1State ? "ON" : "OFF");
+      } else {
+        Serial.println("⚠️ Emergency Stop Active - Relay disabled");
+      }
+      break;
+      
+    case 14:  // Relay 2 Control (0=OFF, 1=ON)
+      if (!emergencyStop) {
+        relay2State = (value > 0);
+        digitalWrite(RELAY2_PIN, relay2State ? LOW : HIGH);
+        Serial.print("🔴 Relay 2: ");
+        Serial.println(relay2State ? "ON" : "OFF");
+      } else {
+        Serial.println("⚠️ Emergency Stop Active - Relay disabled");
+      }
+      break;
+      
+    // ============ EMERGENCY COMMANDS ============
+    case 20:  // Emergency Stop
+      emergencyStop = true;
+      motorSpeed = 0;
+      relay1State = false;
+      relay2State = false;
+      digitalWrite(RELAY1_PIN, HIGH);
+      digitalWrite(RELAY2_PIN, HIGH);
+      digitalWrite(MOTOR_IN1, LOW);
+      digitalWrite(MOTOR_IN2, LOW);
+      analogWrite(MOTOR_ENA, 0);
+      Serial.println("🚨 EMERGENCY STOP ACTIVATED!");
+      Serial.println("   Motor stopped, Relays OFF");
+      break;
+      
+    case 21:  // Clear Emergency Stop
+      emergencyStop = false;
+      Serial.println("✅ Emergency stop cleared");
+      Serial.println("   System ready for commands");
+      break;
+      
+    default:
+      Serial.print("⚠️ Unknown command: ");
+      Serial.println(command);
+      break;
+  }
+}
+
+void updateMotor() {
+  if (emergencyStop || motorSpeed == 0) {
+    analogWrite(MOTOR_ENA, 0);
+    digitalWrite(MOTOR_IN1, LOW);
+    digitalWrite(MOTOR_IN2, LOW);
+  } else {
+    analogWrite(MOTOR_ENA, motorSpeed);
+    if (motorDirection) {
+      // Forward
+      digitalWrite(MOTOR_IN1, HIGH);
+      digitalWrite(MOTOR_IN2, LOW);
+    } else {
+      // Reverse
+      digitalWrite(MOTOR_IN1, LOW);
+      digitalWrite(MOTOR_IN2, HIGH);
+    }
+  }
+}
