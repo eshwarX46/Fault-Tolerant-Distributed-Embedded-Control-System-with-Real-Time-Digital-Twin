@@ -1,4 +1,5 @@
-# Fault-Tolerant Distributed Embedded Control System
+
+# 🚀 Fault-Tolerant Distributed Embedded Control System with Real-Time Digital Twin
 
 ## 📌 Project Overview
 
@@ -8,22 +9,6 @@ A 4-node fault-tolerant distributed embedded control system using **CAN bus** co
 - **Node 2 (Arduino Nano)** - Actuator Controller (L298N Motor, 2xRelays)
 - **Node 3 (ESP32)** - Supervisor (LEDs, Buzzer, Reset Button)
 - **Node 4 (ESP32)** - Gateway + 2.8" TFT Display
-
----
-
-## 🏗️ System Architecture
-NODE 1 NODE 2 NODE 3 NODE 4
-(SENSOR HUB) (ACTUATOR) (SUPERVISOR) (GATEWAY)
-Arduino UNO Arduino Nano ESP32 ESP32
-│ │ │ │
-└────────────────────┼─────────────────────┘ │
-│ │
-═════╪═════════════════════════════════════════╪═══
-CAN BUS (250 KBPS, ISO 11898)
-═════╪═════════════════════════════════════════╪═══
-│ │
-▼ ▼
-● 120Ω Termination ● 120Ω Termination
 
 ---
 
@@ -109,41 +94,6 @@ CAN BUS (250 KBPS, ISO 11898)
 
 ---
 
-## 📊 Expected Output
-
-### TFT Display (Normal)
-┌─────────────────────────────────────────┐
-│ FAULT-TOLERANT SYSTEM │
-├─────────────────────────────────────────┤
-│ NODE 1 - SENSOR HUB │
-│ Temp #1: 31.0C Temp #2: 31.0C │
-│ Current: 0.06A Accel X: -13804 │
-│ │
-│ NODE 2 - ACTUATOR │
-│ Motor Speed: 150 RPM Direction: FWD │
-│ Relay 1: OFF Relay 2: OFF │
-│ │
-│ SYSTEM NORMAL │
-└─────────────────────────────────────────┘
-
-### TFT Display (Fault)
-┌─────────────────────────────────────────┐
-│ FAULT-TOLERANT SYSTEM │
-├─────────────────────────────────────────┤
-│ NODE 1 - SENSOR HUB │
-│ Temp #1: 0.0C Temp #2: 0.0C │
-│ Current: 0.00A Accel X: 0 │
-│ !!! NODE 1 OFFLINE !!! │
-│ │
-│ NODE 2 - ACTUATOR │
-│ Motor Speed: 150 RPM Direction: FWD │
-│ Relay 1: OFF Relay 2: OFF │
-│ │
-│ SYSTEM FAULT │
-└─────────────────────────────────────────┘
-
----
-
 ## 🔧 Troubleshooting
 
 | Problem | Solution |
@@ -155,6 +105,10 @@ CAN BUS (250 KBPS, ISO 11898)
 
 ---
 
+##  Demonstration Video
+https://youtu.be/ZFuNHuojE9w
+
+---
 ## 👤 Author
 
 **Eshwar Prasad Y**  
