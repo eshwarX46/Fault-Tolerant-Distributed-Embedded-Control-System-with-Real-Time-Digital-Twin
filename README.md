@@ -12,6 +12,11 @@ A 4-node fault-tolerant distributed embedded control system using **CAN bus** co
 
 ---
 
+## 📸 Project Image
+<img width="3072" height="3072" alt="image 1" src="https://github.com/user-attachments/assets/27eca356-02b4-4b28-945e-a14aa29a6754" />
+
+---
+
 ## 📡 CAN Protocol
 
 | CAN ID | Sender | Data | Frequency |
@@ -117,7 +122,6 @@ https://youtu.be/ZFuNHuojE9w
 
 ## 🙏 Acknowledgments
 
-- Project Guide for guidance
 - Open-source libraries and communities
 
 ---
