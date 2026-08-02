@@ -1,214 +1,341 @@
-// Node1_CAN_With_Sensors.ino
-// CAN Communication + MPU6050 + ACS712 + 2x DS18B20
+/**
+ * @file Node1_CAN_With_Sensors.ino
+ * @brief CAN Communication Node with Multiple Sensors
+ * 
+ * This code implements a CAN bus node (Node 1) that reads data from
+ * multiple sensors and transmits them over the CAN network.
+ * 
+ * ## Features
+ * - CAN Bus communication at 250KBPS
+ * - MPU6050 6-axis accelerometer + gyroscope
+ * - ACS712 Hall-effect current sensor
+ * - 2x DS18B20 temperature sensors (OneWire protocol)
+ * - Automatic sensor detection and fault tolerance
+ * - Periodic data transmission every 2 seconds
+ * - Real-time sensor monitoring via Serial
+ * 
+ * ## Hardware Requirements
+ * - Arduino Uno/Nano/Mega with CAN controller (MCP2515)
+ * - MPU6050 (I2C)
+ * - ACS712 (Analog)
+ * - 2x DS18B20 (OneWire)
+ * - CAN bus transceiver (MCP2551 or similar)
+ * 
+ * ## CAN Message Format
+ * - ID: 0x100 + NodeID (0x101 for Node 1)
+ * - Data Bytes:
+ *   [0] Node ID
+ *   [1] Message counter
+ *   [2] Time (seconds)
+ *   [3] Temperature #1 (°C)
+ *   [4] Temperature #2 (°C)
+ *   [5] Current * 100 (scaled)
+ *   [6] Accel X high byte
+ *   [7] Accel X low byte
+ * 
+ * @author CAN Node Project
+ */
 
-#include <CAN.h>
-#include <Wire.h>
-#include <MPU6050.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+// ============================================
+//                          LIBRARY INCLUDES
+// ============================================
 
-// ============ PIN DEFINITIONS ============
-#define CURRENT_PIN A0        // ACS712 output
-#define ONE_WIRE_BUS_1 4      // DS18B20 #1 data pin
-#define ONE_WIRE_BUS_2 5      // DS18B20 #2 data pin
+#include <CAN.h>              /**< CAN bus communication library */
+#include <Wire.h>             /**< I2C communication for MPU6050 */
+#include <MPU6050.h>          /**< MPU6050 accelerometer/gyroscope library */
+#include <OneWire.h>          /**< OneWire protocol for DS18B20 */
+#include <DallasTemperature.h> /**< DS18B20 temperature sensor library */
 
-// ============ CAN VARIABLES ============
-int sendCount = 0;
-int receiveCount = 0;
-unsigned long lastSend = 0;
-int nodeId = 1;  // Node 1
+// ============================================
+//                          PIN DEFINITIONS
+// ============================================
 
-// ============ SENSOR OBJECTS ============
-MPU6050 mpu;
-OneWire oneWire1(ONE_WIRE_BUS_1);
-OneWire oneWire2(ONE_WIRE_BUS_2);
-DallasTemperature ds18b20_1(&oneWire1);
-DallasTemperature ds18b20_2(&oneWire2);
+#define CURRENT_PIN A0        /**< ACS712 current sensor analog input */
+#define ONE_WIRE_BUS_1 4      /**< DS18B20 #1 data pin */
+#define ONE_WIRE_BUS_2 5      /**< DS18B20 #2 data pin */
 
-// ============ SENSOR VARIABLES ============
-float current = 0.0;
-float tempC_1 = 25.0;
-float tempC_2 = 25.0;
-float tempF_1 = 77.0;
-float tempF_2 = 77.0;
-int16_t ax, ay, az;
-int16_t gx, gy, gz;
-bool acs712Connected = false;
-bool ds18b20_1_OK = false;
-bool ds18b20_2_OK = false;
-bool mpuOK = false;
+// ============================================
+//                          CAN VARIABLES
+// ============================================
 
+int sendCount = 0;                    /**< Counter for sent messages */
+int receiveCount = 0;                 /**< Counter for received messages */
+unsigned long lastSend = 0;           /**< Timestamp of last transmission */
+int nodeId = 1;                       /**< CAN node identifier */
+
+// ============================================
+//                          SENSOR OBJECTS
+// ============================================
+
+MPU6050 mpu;                          /**< MPU6050 sensor object */
+OneWire oneWire1(ONE_WIRE_BUS_1);     /**< OneWire object for DS18B20 #1 */
+OneWire oneWire2(ONE_WIRE_BUS_2);     /**< OneWire object for DS18B20 #2 */
+DallasTemperature ds18b20_1(&oneWire1); /**< Temperature sensor #1 object */
+DallasTemperature ds18b20_2(&oneWire2); /**< Temperature sensor #2 object */
+
+// ============================================
+//                          SENSOR VARIABLES
+// ============================================
+
+// Current sensor
+float current = 0.0;                  /**< Measured current in Amperes */
+
+// Temperature sensors
+float tempC_1 = 25.0;                 /**< Temperature #1 in Celsius */
+float tempC_2 = 25.0;                 /**< Temperature #2 in Celsius */
+float tempF_1 = 77.0;                 /**< Temperature #1 in Fahrenheit */
+float tempF_2 = 77.0;                 /**< Temperature #2 in Fahrenheit */
+
+// MPU6050 accelerometer
+int16_t ax, ay, az;                   /**< Accelerometer data (X, Y, Z axes) */
+int16_t gx, gy, gz;                   /**< Gyroscope data (X, Y, Z axes) */
+
+// Sensor status flags
+bool acs712Connected = false;         /**< ACS712 presence flag */
+bool ds18b20_1_OK = false;            /**< DS18B20 #1 presence flag */
+bool ds18b20_2_OK = false;            /**< DS18B20 #2 presence flag */
+bool mpuOK = false;                   /**< MPU6050 presence flag */
+
+// ============================================
+//                          SETUP
+// ============================================
+
+/**
+ * @brief Arduino setup function - Initializes all sensors and CAN
+ * 
+ * This function:
+ * 1. Initializes serial communication
+ * 2. Detects and initializes MPU6050
+ * 3. Detects and initializes ACS712 current sensor
+ * 4. Detects and initializes both DS18B20 temperature sensors
+ * 5. Initializes CAN bus at 250KBPS
+ * 6. Displays connection status for all sensors
+ */
 void setup() {
-  Serial.begin(9600);
-  delay(2000);
+  Serial.begin(9600);       /**< Initialize serial at 9600 baud */
+  delay(2000);              /**< Wait for serial monitor to open */
   
   Serial.println("=================================");
   Serial.println("NODE 1 - CAN WITH ALL SENSORS");
   Serial.println("=================================");
   
-  // ============ INITIALIZE MPU6050 ============
-  Wire.begin();
-  mpu.initialize();
-  mpu.setSleepEnabled(false);
-  delay(100);
+  // ============================================
+  // INITIALIZE MPU6050 (I2C Accelerometer/Gyroscope)
+  // ============================================
+  Wire.begin();                    /**< Start I2C communication */
+  mpu.initialize();                /**< Initialize MPU6050 */
+  mpu.setSleepEnabled(false);      /**< Wake up from sleep mode */
+  delay(100);                      /**< Wait for sensor to stabilize */
   
+  // Test MPU6050 by reading acceleration data
   mpu.getAcceleration(&ax, &ay, &az);
   if (ax != 0 || ay != 0 || az != 0) {
-    Serial.println("✅ MPU6050 WORKING!");
+    Serial.println("✅ MPU6050 WORKING!");  /**< Sensor detected */
     mpuOK = true;
   } else {
-    Serial.println("⚠️ MPU6050 - Check wiring");
+    Serial.println("⚠️ MPU6050 - Check wiring");  /**< Sensor not detected */
     mpuOK = false;
   }
   
-  // ============ INITIALIZE ACS712 ============
-  pinMode(CURRENT_PIN, INPUT);
+  // ============================================
+  // INITIALIZE ACS712 (Current Sensor)
+  // ============================================
+  pinMode(CURRENT_PIN, INPUT);   /**< Set current sensor pin as input */
   
+  // Read average to check if sensor is connected
   int sum = 0;
   for(int i = 0; i < 10; i++) {
     sum += analogRead(CURRENT_PIN);
     delay(10);
   }
-  int avg = sum / 10;
+  int avg = sum / 10;            /**< Average analog reading */
   
+  // Valid ACS712 output should be around 2.5V (512 in ADC)
   if(avg > 400 && avg < 600) {
-    Serial.println("✅ ACS712 CONNECTED!");
+    Serial.println("✅ ACS712 CONNECTED!");  /**< Sensor detected */
     acs712Connected = true;
   } else {
-    Serial.println("⚠️ ACS712 NOT CONNECTED!");
+    Serial.println("⚠️ ACS712 NOT CONNECTED!");  /**< Sensor not detected */
     acs712Connected = false;
   }
   
-  // ============ INITIALIZE DS18B20 #1 (Pin 4) ============
-  ds18b20_1.begin();
-  delay(100);
+  // ============================================
+  // INITIALIZE DS18B20 #1 (Temperature Sensor on Pin 4)
+  // ============================================
+  ds18b20_1.begin();            /**< Initialize OneWire communication */
+  delay(100);                   /**< Wait for sensor to respond */
   
   if (ds18b20_1.getDeviceCount() > 0) {
-    Serial.println("✅ DS18B20 #1 (Pin 4) WORKING!");
+    Serial.println("✅ DS18B20 #1 (Pin 4) WORKING!");  /**< Sensor detected */
     ds18b20_1_OK = true;
   } else {
-    Serial.println("❌ DS18B20 #1 (Pin 4) NOT FOUND!");
+    Serial.println("❌ DS18B20 #1 (Pin 4) NOT FOUND!");  /**< Sensor not detected */
     ds18b20_1_OK = false;
   }
   
-  // ============ INITIALIZE DS18B20 #2 (Pin 5) ============
-  ds18b20_2.begin();
-  delay(100);
+  // ============================================
+  // INITIALIZE DS18B20 #2 (Temperature Sensor on Pin 5)
+  // ============================================
+  ds18b20_2.begin();            /**< Initialize OneWire communication */
+  delay(100);                   /**< Wait for sensor to respond */
   
   if (ds18b20_2.getDeviceCount() > 0) {
-    Serial.println("✅ DS18B20 #2 (Pin 5) WORKING!");
+    Serial.println("✅ DS18B20 #2 (Pin 5) WORKING!");  /**< Sensor detected */
     ds18b20_2_OK = true;
   } else {
-    Serial.println("❌ DS18B20 #2 (Pin 5) NOT FOUND!");
+    Serial.println("❌ DS18B20 #2 (Pin 5) NOT FOUND!");  /**< Sensor not detected */
     ds18b20_2_OK = false;
   }
   
-  // ============ INITIALIZE CAN ============
-  if (!CAN.begin(250E3)) {
-    Serial.println("❌ CAN FAILED!");
-    while(1);
+  // ============================================
+  // INITIALIZE CAN BUS
+  // ============================================
+  if (!CAN.begin(250E3)) {      /**< Start CAN at 250 kbps */
+    Serial.println("❌ CAN FAILED!");  /**< CAN initialization failed */
+    while(1);                          /**< Halt on error */
   }
   
-  Serial.println("✅ CAN Ready at 250KBPS!");
+  Serial.println("✅ CAN Ready at 250KBPS!");  /**< CAN initialized successfully */
   Serial.println("=================================\n");
 }
 
+// ============================================
+//                          MAIN LOOP
+// ============================================
+
+/**
+ * @brief Main program loop - Reads sensors and handles CAN communication
+ * 
+ * This function:
+ * 1. Reads all sensors (MPU6050, ACS712, 2x DS18B20)
+ * 2. Sends CAN data every 2 seconds
+ * 3. Receives and processes incoming CAN messages
+ * 4. Prints debug output every 2 seconds
+ */
 void loop() {
-  // ============ READ ALL SENSORS ============
+  // ============================================
+  // READ ALL SENSORS
+  // ============================================
   
-  // Read MPU6050
+  // Read MPU6050 accelerometer and gyroscope
   if (mpuOK) {
-    mpu.getAcceleration(&ax, &ay, &az);
-    mpu.getRotation(&gx, &gy, &gz);
+    mpu.getAcceleration(&ax, &ay, &az);  /**< Read accelerometer data */
+    mpu.getRotation(&gx, &gy, &gz);      /**< Read gyroscope data */
   }
   
-  // Read ACS712
+  // Read ACS712 current sensor
   if (acs712Connected) {
-    int rawCurrent = analogRead(CURRENT_PIN);
-    float voltage = (rawCurrent / 1023.0) * 5.0;
-    current = (voltage - 2.5) / 0.185;
-    if (current < 0) current = 0;
+    int rawCurrent = analogRead(CURRENT_PIN);          /**< Read ADC value */
+    float voltage = (rawCurrent / 1023.0) * 5.0;       /**< Convert to voltage */
+    current = (voltage - 2.5) / 0.185;                 /**< Convert to Amperes */
+    if (current < 0) current = 0;                      /**< Clamp negative values */
   } else {
-    current = 0.00;
+    current = 0.00;  /**< Default value when sensor not connected */
   }
   
-  // Read DS18B20 #1
+  // Read DS18B20 #1 temperature
   if (ds18b20_1_OK) {
-    ds18b20_1.requestTemperatures();
-    tempC_1 = ds18b20_1.getTempCByIndex(0);
-    tempF_1 = ds18b20_1.getTempFByIndex(0);
+    ds18b20_1.requestTemperatures();                   /**< Request temperature reading */
+    tempC_1 = ds18b20_1.getTempCByIndex(0);            /**< Read in Celsius */
+    tempF_1 = ds18b20_1.getTempFByIndex(0);            /**< Read in Fahrenheit */
     if (tempC_1 <= -127) {
-      tempC_1 = 25.0;
+      tempC_1 = 25.0;  /**< Default value on read error */
       tempF_1 = 77.0;
     }
   }
   
-  // Read DS18B20 #2
+  // Read DS18B20 #2 temperature
   if (ds18b20_2_OK) {
-    ds18b20_2.requestTemperatures();
-    tempC_2 = ds18b20_2.getTempCByIndex(0);
-    tempF_2 = ds18b20_2.getTempFByIndex(0);
+    ds18b20_2.requestTemperatures();                   /**< Request temperature reading */
+    tempC_2 = ds18b20_2.getTempCByIndex(0);            /**< Read in Celsius */
+    tempF_2 = ds18b20_2.getTempFByIndex(0);            /**< Read in Fahrenheit */
     if (tempC_2 <= -127) {
-      tempC_2 = 25.0;
+      tempC_2 = 25.0;  /**< Default value on read error */
       tempF_2 = 77.0;
     }
   }
   
-  // ============ CAN SEND DATA (Every 2 seconds) ============
+  // ============================================
+  // CAN SEND DATA (Every 2 seconds)
+  // ============================================
   if (millis() - lastSend > 2000) {
-    sendData();
-    lastSend = millis();
+    sendData();             /**< Transmit sensor data over CAN */
+    lastSend = millis();    /**< Update last send timestamp */
   }
   
-  // ============ CAN RECEIVE DATA ============
-  receiveData();
+  // ============================================
+  // CAN RECEIVE DATA
+  // ============================================
+  receiveData();            /**< Check for and process incoming CAN messages */
   
-  // ============ SERIAL DEBUG OUTPUT ============
-  debugOutput();
+  // ============================================
+  // SERIAL DEBUG OUTPUT
+  // ============================================
+  debugOutput();            /**< Print sensor readings to serial monitor */
   
-  delay(10);
+  delay(10);  /**< Small delay to prevent CPU hogging */
 }
 
+// ============================================
+//                          CAN FUNCTIONS
+// ============================================
+
+/**
+ * @brief Send sensor data over CAN bus
+ * 
+ * Transmits a CAN message with the following format:
+ * - ID: 0x100 + NodeID (0x101 for Node 1)
+ * - Data: 8 bytes containing sensor values
+ * 
+ * @note Transmission happens every 2 seconds in the main loop
+ */
 void sendData() {
   Serial.print("📤 Sending #");
   Serial.print(sendCount);
   Serial.print("... ");
   
-  CAN.beginPacket(0x100 + nodeId);
-  CAN.write(nodeId);                    // Byte 0: Node ID
-  CAN.write(sendCount);                 // Byte 1: Message number
-  CAN.write(millis() / 1000);           // Byte 2: Time
-  CAN.write((int)tempC_1);              // Byte 3: Temp #1
-  CAN.write((int)tempC_2);              // Byte 4: Temp #2
-  CAN.write((int)(current * 100));      // Byte 5: Current * 100
-  CAN.write((ax >> 8) & 0xFF);          // Byte 6: Accel X high byte
-  CAN.write(ax & 0xFF);                 // Byte 7: Accel X low byte
-  CAN.endPacket();
+  CAN.beginPacket(0x100 + nodeId);          /**< Start CAN packet with ID */
+  CAN.write(nodeId);                        /**< Byte 0: Node ID */
+  CAN.write(sendCount);                     /**< Byte 1: Message counter */
+  CAN.write(millis() / 1000);               /**< Byte 2: Uptime in seconds */
+  CAN.write((int)tempC_1);                  /**< Byte 3: Temperature #1 (Celsius) */
+  CAN.write((int)tempC_2);                  /**< Byte 4: Temperature #2 (Celsius) */
+  CAN.write((int)(current * 100));          /**< Byte 5: Current * 100 (scaled) */
+  CAN.write((ax >> 8) & 0xFF);              /**< Byte 6: Accel X high byte */
+  CAN.write(ax & 0xFF);                     /**< Byte 7: Accel X low byte */
+  CAN.endPacket();                          /**< Send the packet */
   
-  Serial.println("✓");
-  sendCount++;
+  Serial.println("✓");      /**< Transmission successful */
+  sendCount++;              /**< Increment message counter */
 }
 
+/**
+ * @brief Receive and process CAN messages
+ * 
+ * Checks for incoming CAN packets and displays them.
+ * Currently only prints received data; can be extended for
+ * command processing or actuator control.
+ */
 void receiveData() {
-  int packetSize = CAN.parsePacket();
+  int packetSize = CAN.parsePacket();  /**< Check for available packet */
   
-  if (packetSize) {
-    byte data[8];
+  if (packetSize) {                    /**< If packet received */
+    byte data[8];                      /**< Buffer for received data */
     int i = 0;
     while (CAN.available() && i < 8) {
-      data[i++] = CAN.read();
+      data[i++] = CAN.read();          /**< Read data bytes */
     }
     
-    if (i >= 3) {
+    if (i >= 3) {                      /**< Minimum required bytes */
       Serial.print("📥 From: ");
-      Serial.print(data[0]);
+      Serial.print(data[0]);           /**< Display sender node ID */
       Serial.print(" | Msg: ");
-      Serial.print(data[1]);
+      Serial.print(data[1]);           /**< Display message counter */
       
-      if (i > 3) {
+      if (i > 3) {                     /**< If additional data exists */
         Serial.print(" | Data: ");
         for(int j=3; j<i; j++) {
-          Serial.print((char)data[j]);
+          Serial.print((char)data[j]); /**< Display data as characters */
         }
       }
       Serial.println();
@@ -216,25 +343,47 @@ void receiveData() {
   }
 }
 
+// ============================================
+//                          DEBUG FUNCTIONS
+// ============================================
+
+/**
+ * @brief Print sensor readings to serial monitor
+ * 
+ * Displays all sensor data every 2 seconds for monitoring and debugging.
+ * Shows temperature, accelerometer, and current readings.
+ */
 void debugOutput() {
-  static unsigned long lastDebug = 0;
-  if (millis() - lastDebug > 2000) {
+  static unsigned long lastDebug = 0;  /**< Track last debug output time */
+  
+  if (millis() - lastDebug > 2000) {   /**< Print every 2 seconds */
     Serial.println("--- SENSOR DATA ---");
+    
+    // Temperature readings
     Serial.print("🌡️ Temp #1: ");
     Serial.print(tempC_1);
     Serial.print("°C | Temp #2: ");
     Serial.print(tempC_2);
     Serial.println("°C");
+    
+    // Accelerometer readings
     Serial.print("📳 Accel X:");
     Serial.print(ax);
     Serial.print(" Y:");
     Serial.print(ay);
     Serial.print(" Z:");
     Serial.println(az);
+    
+    // Current reading
     Serial.print("⚡ Current: ");
     Serial.print(current);
     Serial.println("A");
+    
     Serial.println("-------------------\n");
-    lastDebug = millis();
+    lastDebug = millis();  /**< Update last debug time */
   }
 }
+
+// ============================================
+//                          END OF CODE
+// ============================================
