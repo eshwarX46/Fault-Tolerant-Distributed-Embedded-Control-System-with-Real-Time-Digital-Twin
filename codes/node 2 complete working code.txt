@@ -1,57 +1,132 @@
-// Node2_FINAL_Working.ino
-// CAN + Motor + 2 Relays - Fully Working
-// Save this as your final Node 2 code
+/**
+ * @file Node2_FINAL_Working.ino
+ * @brief CAN Node 2 - Motor and Relay Control
+ * 
+ * This code implements CAN Node 2 which controls actuators including
+ * a DC motor with speed/direction control and two relay outputs.
+ * 
+ * ## Features
+ * - CAN bus communication at 250KBPS
+ * - DC motor control with PWM speed (0-255) and direction
+ * - 2x Relay outputs (low-level trigger)
+ * - Emergency stop functionality
+ * - Status reporting every 2 seconds
+ * - Command execution from CAN network
+ * 
+ * ## Hardware Requirements
+ * - Arduino Uno/Nano/Mega with CAN controller (MCP2515)
+ * - L298N Motor Driver
+ * - DC Motor (12V recommended)
+ * - 2x Relay modules (low-level trigger)
+ * - CAN bus transceiver (MCP2551 or similar)
+ * - External power supply for motor and relays
+ * 
+ * ## CAN Command Format (ID: 0x401)
+ * - Data:
+ *   [0] Target Node ID (2 for this node, 0 for broadcast)
+ *   [1] Command Code
+ *   [2] Value
+ * 
+ * ## Supported Commands
+ * - 10: Set Motor Speed (value: 0-255)
+ * - 12: Set Motor Direction (value: 0=Reverse, 1=Forward)
+ * - 13: Relay 1 Control (value: 0=OFF, 1=ON)
+ * - 14: Relay 2 Control (value: 0=OFF, 1=ON)
+ * - 20: Emergency Stop
+ * - 21: Clear Emergency Stop
+ * 
+ * @author CAN Node Project
+ */
 
-#include <CAN.h>
+// ============================================
+//                          LIBRARY INCLUDES
+// ============================================
 
-// ============ PIN DEFINITIONS ============
-#define RELAY1_PIN 5   // CH1 - Bulb 1 (Heater simulation)
-#define RELAY2_PIN 6   // CH2 - Bulb 2 (Spare)
-#define MOTOR_ENA 9    // L298N ENA (PWM speed control)
-#define MOTOR_IN1 8    // L298N IN1 (Direction)
-#define MOTOR_IN2 7    // L298N IN2 (Direction)
+#include <CAN.h>          /**< CAN bus communication library */
 
-// ============ CAN VARIABLES ============
-int sendCount = 0;
-int receiveCount = 0;
-unsigned long lastSend = 0;
-int nodeId = 2;
+// ============================================
+//                          PIN DEFINITIONS
+// ============================================
 
-// ============ ACTUATOR STATES ============
-int motorSpeed = 0;
-bool motorDirection = true;  // true = Forward, false = Reverse
-bool relay1State = false;     // false = OFF, true = ON
-bool relay2State = false;
-bool emergencyStop = false;
+// Relay Outputs (Active LOW - Logic HIGH turns relay OFF)
+#define RELAY1_PIN 5      /**< Relay 1 - Bulb 1 (Heater simulation) */
+#define RELAY2_PIN 6      /**< Relay 2 - Bulb 2 (Spare relay output) */
 
+// L298N Motor Driver Pins
+#define MOTOR_ENA 9       /**< Motor speed control (PWM pin) */
+#define MOTOR_IN1 8       /**< Motor direction control 1 */
+#define MOTOR_IN2 7       /**< Motor direction control 2 */
+
+// ============================================
+//                          CAN VARIABLES
+// ============================================
+
+int sendCount = 0;                /**< Counter for sent status messages */
+int receiveCount = 0;             /**< Counter for received commands */
+unsigned long lastSend = 0;       /**< Timestamp of last status transmission */
+int nodeId = 2;                   /**< CAN node identifier */
+
+// ============================================
+//                          ACTUATOR STATES
+// ============================================
+
+int motorSpeed = 0;               /**< Motor speed (0-255) */
+bool motorDirection = true;       /**< true = Forward, false = Reverse */
+bool relay1State = false;         /**< Relay 1 state: false=OFF, true=ON */
+bool relay2State = false;         /**< Relay 2 state: false=OFF, true=ON */
+bool emergencyStop = false;       /**< Emergency stop flag */
+
+// ============================================
+//                          SETUP
+// ============================================
+
+/**
+ * @brief Arduino setup function - Initializes all actuators and CAN
+ * 
+ * This function:
+ * 1. Initializes serial communication
+ * 2. Configures relay pins (starts OFF)
+ * 3. Configures motor control pins (stops motor)
+ * 4. Initializes CAN bus at 250KBPS
+ * 5. Displays ready status and instructions
+ */
 void setup() {
-  Serial.begin(9600);
-  delay(2000);
+  Serial.begin(9600);      /**< Initialize serial at 9600 baud */
+  delay(2000);             /**< Wait for serial monitor to open */
   
   Serial.println("=================================");
   Serial.println("NODE 2 - COMPLETE (Motor + 2 Relays)");
   Serial.println("=================================");
   
-  // Initialize Relays
+  // ============================================
+  // INITIALIZE RELAYS (Active LOW)
+  // ============================================
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
-  digitalWrite(RELAY1_PIN, HIGH);  // Start OFF (HIGH = OFF for low-level trigger)
-  digitalWrite(RELAY2_PIN, HIGH);
+  digitalWrite(RELAY1_PIN, HIGH);  /**< Start OFF (HIGH = OFF for low-level trigger) */
+  digitalWrite(RELAY2_PIN, HIGH);  /**< Start OFF (HIGH = OFF for low-level trigger) */
   
-  // Initialize Motor
+  // ============================================
+  // INITIALIZE MOTOR
+  // ============================================
   pinMode(MOTOR_ENA, OUTPUT);
   pinMode(MOTOR_IN1, OUTPUT);
   pinMode(MOTOR_IN2, OUTPUT);
+  
+  // Ensure motor is stopped at startup
   digitalWrite(MOTOR_IN1, LOW);
   digitalWrite(MOTOR_IN2, LOW);
   analogWrite(MOTOR_ENA, 0);
   
-  // Initialize CAN
-  if (!CAN.begin(250E3)) {
+  // ============================================
+  // INITIALIZE CAN BUS
+  // ============================================
+  if (!CAN.begin(250E3)) {      /**< Start CAN at 250 kbps */
     Serial.println("❌ CAN FAILED!");
-    while(1);
+    while(1);                          /**< Halt on error */
   }
   
+  // Display initialization status
   Serial.println("✅ CAN Ready at 250KBPS!");
   Serial.println("✅ Motor Ready!");
   Serial.println("✅ Relays Ready!");
@@ -60,23 +135,46 @@ void setup() {
   Serial.println("=================================\n");
 }
 
+// ============================================
+//                          MAIN LOOP
+// ============================================
+
+/**
+ * @brief Main program loop - Handles CAN communication and actuator updates
+ * 
+ * This function:
+ * 1. Sends status message every 2 seconds
+ * 2. Checks for and processes incoming CAN commands
+ * 3. Updates motor output based on current settings
+ */
 void loop() {
-  // Send status every 2 seconds
+  // Send status message every 2 seconds
   if (millis() - lastSend > 2000) {
     sendData();
-    lastSend = millis();
+    lastSend = millis();      /**< Update last send timestamp */
   }
   
   // Check for incoming CAN commands
   receiveData();
   
-  // Update motor output
+  // Update motor output based on current settings
   updateMotor();
   
-  delay(10);
+  delay(10);  /**< Small delay to prevent CPU hogging */
 }
 
+// ============================================
+//                          CAN FUNCTIONS
+// ============================================
+
+/**
+ * @brief Send status data over CAN bus
+ * 
+ * Transmits current actuator states over CAN with ID 0x200.
+ * Data includes motor speed, direction, relay states, and emergency status.
+ */
 void sendData() {
+  // Print status to serial monitor
   Serial.print("📤 Status | Motor:");
   Serial.print(motorSpeed);
   Serial.print(" | Dir:");
@@ -89,37 +187,45 @@ void sendData() {
   Serial.print(emergencyStop ? "YES" : "NO");
   Serial.println();
   
-  CAN.beginPacket(0x200);  // Node 2 Status ID
-  CAN.write(nodeId);           // Byte 0: Node ID
-  CAN.write(sendCount);        // Byte 1: Message number
-  CAN.write(millis() / 1000);  // Byte 2: Time
-  CAN.write(motorSpeed);       // Byte 3: Motor speed
-  CAN.write(motorDirection ? 1 : 0);  // Byte 4: Direction
-  CAN.write(relay1State ? 1 : 0);     // Byte 5: Relay 1 state
-  CAN.write(relay2State ? 1 : 0);     // Byte 6: Relay 2 state
-  CAN.write(emergencyStop ? 1 : 0);   // Byte 7: Emergency state
-  CAN.endPacket();
+  // Send status over CAN
+  CAN.beginPacket(0x200);                      /**< Node 2 Status ID */
+  CAN.write(nodeId);                           /**< Byte 0: Node ID */
+  CAN.write(sendCount);                        /**< Byte 1: Message counter */
+  CAN.write(millis() / 1000);                  /**< Byte 2: Uptime in seconds */
+  CAN.write(motorSpeed);                       /**< Byte 3: Motor speed (0-255) */
+  CAN.write(motorDirection ? 1 : 0);           /**< Byte 4: Direction (1=FWD, 0=REV) */
+  CAN.write(relay1State ? 1 : 0);              /**< Byte 5: Relay 1 state */
+  CAN.write(relay2State ? 1 : 0);              /**< Byte 6: Relay 2 state */
+  CAN.write(emergencyStop ? 1 : 0);            /**< Byte 7: Emergency state */
+  CAN.endPacket();                             /**< Send the packet */
   
-  sendCount++;
+  sendCount++;  /**< Increment message counter */
 }
 
+/**
+ * @brief Receive and process CAN commands
+ * 
+ * Checks for incoming CAN messages and executes commands
+ * targeted at this node (ID 2) or broadcast (ID 0).
+ * Expected command format: ID 0x401 with data bytes.
+ */
 void receiveData() {
-  int packetSize = CAN.parsePacket();
+  int packetSize = CAN.parsePacket();  /**< Check for available packet */
   
-  if (packetSize) {
-    receiveCount++;
+  if (packetSize) {                    /**< If packet received */
+    receiveCount++;                    /**< Increment receive counter */
     
-    byte data[8];
+    byte data[8];                      /**< Buffer for received data */
     int i = 0;
     while (CAN.available() && i < 8) {
-      data[i++] = CAN.read();
+      data[i++] = CAN.read();          /**< Read data bytes */
     }
     
-    // Check if it's a command message (ID 0x401)
+    // Check if it's a command message (ID 0x401) with sufficient data
     if (CAN.packetId() == 0x401 && i >= 3) {
-      int target = data[0];
-      int command = data[1];
-      int value = data[2];
+      int target = data[0];            /**< Target node ID */
+      int command = data[1];           /**< Command code */
+      int value = data[2];             /**< Command value */
       
       // Execute command if target is this node (2) or broadcast (0)
       if (target == nodeId || target == 0) {
@@ -129,12 +235,32 @@ void receiveData() {
   }
 }
 
+// ============================================
+//                          COMMAND EXECUTION
+// ============================================
+
+/**
+ * @brief Execute actuator commands based on command code
+ * @param command Command code to execute
+ * @param value Parameter value for the command
+ * 
+ * Supported Commands:
+ * - 10: Set Motor Speed (0-255)
+ * - 12: Set Motor Direction (0=Reverse, 1=Forward)
+ * - 13: Relay 1 Control (0=OFF, 1=ON)
+ * - 14: Relay 2 Control (0=OFF, 1=ON)
+ * - 20: Emergency Stop (disables motor and relays)
+ * - 21: Clear Emergency Stop (restores control)
+ */
 void executeCommand(int command, int value) {
   switch(command) {
-    // ============ MOTOR COMMANDS ============
-    case 10:  // Set Motor Speed (0-255)
+    // ============================================
+    // MOTOR COMMANDS
+    // ============================================
+    
+    case 10:  /**< Set Motor Speed (0-255) */
       if (!emergencyStop) {
-        motorSpeed = constrain(value, 0, 255);
+        motorSpeed = constrain(value, 0, 255);  /**< Clamp value to valid range */
         Serial.print("🎯 Motor speed set to: ");
         Serial.println(motorSpeed);
       } else {
@@ -142,9 +268,9 @@ void executeCommand(int command, int value) {
       }
       break;
       
-    case 12:  // Set Motor Direction (0=Reverse, 1=Forward)
+    case 12:  /**< Set Motor Direction (0=Reverse, 1=Forward) */
       if (!emergencyStop) {
-        motorDirection = (value > 0);
+        motorDirection = (value > 0);  /**< Convert to boolean */
         Serial.print("🔄 Motor direction: ");
         Serial.println(motorDirection ? "FORWARD" : "REVERSE");
       } else {
@@ -152,11 +278,14 @@ void executeCommand(int command, int value) {
       }
       break;
       
-    // ============ RELAY COMMANDS ============
-    case 13:  // Relay 1 Control (0=OFF, 1=ON)
+    // ============================================
+    // RELAY COMMANDS
+    // ============================================
+    
+    case 13:  /**< Relay 1 Control (0=OFF, 1=ON) */
       if (!emergencyStop) {
-        relay1State = (value > 0);
-        digitalWrite(RELAY1_PIN, relay1State ? LOW : HIGH);
+        relay1State = (value > 0);  /**< Convert to boolean */
+        digitalWrite(RELAY1_PIN, relay1State ? LOW : HIGH);  /**< Active LOW */
         Serial.print("🔴 Relay 1: ");
         Serial.println(relay1State ? "ON" : "OFF");
       } else {
@@ -164,10 +293,10 @@ void executeCommand(int command, int value) {
       }
       break;
       
-    case 14:  // Relay 2 Control (0=OFF, 1=ON)
+    case 14:  /**< Relay 2 Control (0=OFF, 1=ON) */
       if (!emergencyStop) {
-        relay2State = (value > 0);
-        digitalWrite(RELAY2_PIN, relay2State ? LOW : HIGH);
+        relay2State = (value > 0);  /**< Convert to boolean */
+        digitalWrite(RELAY2_PIN, relay2State ? LOW : HIGH);  /**< Active LOW */
         Serial.print("🔴 Relay 2: ");
         Serial.println(relay2State ? "ON" : "OFF");
       } else {
@@ -175,22 +304,28 @@ void executeCommand(int command, int value) {
       }
       break;
       
-    // ============ EMERGENCY COMMANDS ============
-    case 20:  // Emergency Stop
+    // ============================================
+    // EMERGENCY COMMANDS
+    // ============================================
+    
+    case 20:  /**< Emergency Stop - Immediately stops all actuators */
       emergencyStop = true;
       motorSpeed = 0;
       relay1State = false;
       relay2State = false;
-      digitalWrite(RELAY1_PIN, HIGH);
-      digitalWrite(RELAY2_PIN, HIGH);
-      digitalWrite(MOTOR_IN1, LOW);
-      digitalWrite(MOTOR_IN2, LOW);
-      analogWrite(MOTOR_ENA, 0);
+      
+      // Turn off all outputs
+      digitalWrite(RELAY1_PIN, HIGH);  /**< Relay OFF */
+      digitalWrite(RELAY2_PIN, HIGH);  /**< Relay OFF */
+      digitalWrite(MOTOR_IN1, LOW);    /**< Motor stop */
+      digitalWrite(MOTOR_IN2, LOW);    /**< Motor stop */
+      analogWrite(MOTOR_ENA, 0);       /**< Motor speed 0 */
+      
       Serial.println("🚨 EMERGENCY STOP ACTIVATED!");
       Serial.println("   Motor stopped, Relays OFF");
       break;
       
-    case 21:  // Clear Emergency Stop
+    case 21:  /**< Clear Emergency Stop - Restore normal operation */
       emergencyStop = false;
       Serial.println("✅ Emergency stop cleared");
       Serial.println("   System ready for commands");
@@ -203,21 +338,38 @@ void executeCommand(int command, int value) {
   }
 }
 
+// ============================================
+//                          MOTOR CONTROL
+// ============================================
+
+/**
+ * @brief Update motor output based on current settings
+ * 
+ * Applies motor speed and direction settings to the L298N driver.
+ * Motor is stopped if emergency stop is active or speed is 0.
+ */
 void updateMotor() {
   if (emergencyStop || motorSpeed == 0) {
+    // Stop motor
     analogWrite(MOTOR_ENA, 0);
     digitalWrite(MOTOR_IN1, LOW);
     digitalWrite(MOTOR_IN2, LOW);
   } else {
-    analogWrite(MOTOR_ENA, motorSpeed);
+    // Apply motor settings
+    analogWrite(MOTOR_ENA, motorSpeed);  /**< Set PWM speed */
+    
     if (motorDirection) {
-      // Forward
+      // Forward direction
       digitalWrite(MOTOR_IN1, HIGH);
       digitalWrite(MOTOR_IN2, LOW);
     } else {
-      // Reverse
+      // Reverse direction
       digitalWrite(MOTOR_IN1, LOW);
       digitalWrite(MOTOR_IN2, HIGH);
     }
   }
 }
+
+// ============================================
+//                          END OF CODE
+// ============================================
