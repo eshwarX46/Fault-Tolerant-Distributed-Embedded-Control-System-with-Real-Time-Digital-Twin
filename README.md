@@ -111,7 +111,7 @@ A 4-node fault-tolerant distributed embedded control system using **CAN bus** co
 ---
 
 ##  Demonstration Video
-https://youtu.be/ZFuNHuojE9w
+https://youtu.be/R3NE2LGSu5U
 
 ---
 ## 👤 Author
